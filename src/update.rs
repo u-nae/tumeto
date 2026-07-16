@@ -26,7 +26,7 @@ pub fn handle_events(app: &mut App) -> io::Result<()> {
         match app.mode {
             AppMode::Normal => handle_normal_mode(app, key.code),
             AppMode::Input => handle_input_mode(app, key.code),
-
+            AppMode::Search => handle_search_mode(app, key.code),
             AppMode::Help => app.toggle_help(),
             AppMode::EditingNotes => handle_editing_notes_mode(app, key.code),
         }
@@ -58,6 +58,8 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Char('m') => app.enter_notes_mode(),
 
         KeyCode::Char('p') => app.cycle_priority(),
+
+        KeyCode::Char('/') => app.enter_search_mode(),
 
         _ => {}
     }
@@ -91,6 +93,16 @@ fn handle_editing_notes_mode(app: &mut App, key: KeyCode) {
 
         KeyCode::Char(c) => app.notes_buffer.push(c),
 
+        _ => {}
+    }
+}
+
+fn handle_search_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Enter => app.confirm_search(),
+        KeyCode::Esc => app.cancel_search(),
+        KeyCode::Backspace => app.backspace_search(),
+        KeyCode::Char(c) => app.push_search(c),
         _ => {}
     }
 }

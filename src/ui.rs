@@ -23,6 +23,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     match app.mode {
         AppMode::Normal => render_normal(frame, app, inner_area),
         AppMode::Input => render_input(frame, app, inner_area),
+        AppMode::Search => render_search(frame, app, inner_area),
         AppMode::Help => {
             render_normal(frame, app, inner_area);
             render_help_overlay(frame, area);
@@ -58,8 +59,14 @@ fn render_list_pane(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let title = if app.search_query.is_empty() {
+        " 할 일 ".to_string()
+    } else {
+        format!(" 할 일 (검색: {}) ", app.search_query)
+    };
+
     let panel = Block::default()
-        .title(" 할 일 ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(border_style);
 
@@ -95,9 +102,8 @@ fn render_notes_content(frame: &mut Frame, app: &App, area: Rect) {
     let content = if is_editing {
         app.notes_buffer.as_str()
     } else {
-        app.todos
-            .get(app.selected)
-            .map(|item| item.notes.as_str())
+        app.current_index()
+            .map(|index| app.todos[index].notes.as_str())
             .unwrap_or("")
     };
 
@@ -186,15 +192,25 @@ fn render_editing_notes(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
-    if app.todos.is_empty() {
-        let empty_msg = Paragraph::new("아직 할 일이 없습니다. [ a ] 를 눌러 추가하세요.")
+    let visible = app.visible_indices();
+
+    if visible.is_empty() {
+        let message = if app.search_query.is_empty() {
+            "아직 할 일이 없습니다. [ a ] 를 눌러 추가하세요."
+        } else {
+            "검색 결과가 없습니다."
+        };
+        let empty_msg = Paragraph::new(message)
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center);
         frame.render_widget(empty_msg, area);
         return;
     }
 
-    let items: Vec<ListItem> = app.todos.iter().map(build_list_item).collect();
+    let items: Vec<ListItem> = visible
+        .iter()
+        .map(|&index| build_list_item(&app.todos[index]))
+        .collect();
 
     let list = List::new(items).highlight_style(
         Style::default()
@@ -271,6 +287,38 @@ fn render_input_box(frame: &mut Frame, app: &App, area: Rect) {
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
+fn render_search(frame: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    render_content(frame, app, chunks[0]);
+    render_search_box(frame, app, chunks[1]);
+    render_footer(frame, chunks[2], FooterMode::Search);
+}
+
+fn render_search_box(frame: &mut Frame, app: &App, area: Rect) {
+    let search_box = Paragraph::new(app.search_query.as_str())
+        .block(
+            Block::default()
+                .title(" 검색 ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Magenta)),
+        )
+        .style(Style::default().fg(Color::Magenta));
+
+    frame.render_widget(search_box, area);
+
+    let cursor_x =
+        (area.x + 1 + app.search_query.width() as u16).min(area.right().saturating_sub(2));
+    frame.set_cursor_position((cursor_x, area.y + 1));
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, mode: FooterMode) {
     let text = match mode {
         FooterMode::Normal => {
@@ -280,6 +328,7 @@ fn render_footer(frame: &mut Frame, area: Rect, mode: FooterMode) {
         FooterMode::EditingNotes => {
             "[ Ctrl+S ] 메모 저장  [ Esc ] 취소  [ Enter ] 줄 바꿈  [ Backspace ] 삭제"
         }
+        FooterMode::Search => "[ Enter ] 검색 확정  [ Esc ] 검색 해제  [ 문자 ] 실시간 필터",
     };
 
     let footer = Paragraph::new(text)
@@ -347,6 +396,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled("우선순위 순환 (Low → Medium → High)", desc),
         ]),
         Line::from(vec![
+            Span::styled("  /          ", key),
+            Span::styled("제목 검색 / 필터", desc),
+        ]),
+        Line::from(vec![
             Span::styled("  ?          ", key),
             Span::styled("도움말 닫기", desc),
         ]),
@@ -396,6 +449,21 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  White      ", Style::default().fg(Color::White)),
             Span::styled("Low (기본값)", desc),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(" 검색 모드", head)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  문자 입력  ", key),
+            Span::styled("실시간 필터 (대소문자 무시)", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter      ", key),
+            Span::styled("검색 확정 (필터 유지)", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc        ", key),
+            Span::styled("검색 해제 (전체 표시)", desc),
         ]),
         Line::from(""),
         Line::from(Span::styled(" 메모 편집 모드", head)),
@@ -454,4 +522,5 @@ enum FooterMode {
     Normal,
     Input,
     EditingNotes,
+    Search,
 }

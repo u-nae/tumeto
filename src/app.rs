@@ -50,6 +50,7 @@ pub enum AppMode {
     Input,
     Help,
     EditingNotes,
+    Search,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -88,6 +89,9 @@ pub struct App {
 
     #[serde(skip)]
     pub notes_buffer: String,
+
+    #[serde(skip)]
+    pub search_query: String,
 }
 
 impl Default for App {
@@ -103,6 +107,7 @@ impl Default for App {
             last_deleted: None,
             focused_pane: FocusedPane::List,
             notes_buffer: String::new(),
+            search_query: String::new(),
         }
     }
 }
@@ -130,35 +135,28 @@ impl App {
     }
 
     pub fn toggle_selected(&mut self) {
-        if let Some(item) = self.todos.get_mut(self.selected) {
-            item.completed = !item.completed;
+        if let Some(index) = self.current_index() {
+            self.todos[index].completed = !self.todos[index].completed;
             self.dirty = true;
         }
     }
 
     pub fn delete_selected(&mut self) {
-        if self.todos.is_empty() {
+        let Some(index) = self.current_index() else {
             return;
-        }
-
-        let removed = self.todos.remove(self.selected);
-        self.last_deleted = Some((self.selected, removed));
-
-        if self.todos.is_empty() {
-            self.selected = 0;
-        } else {
-            self.selected = self.selected.min(self.todos.len() - 1);
-        }
+        };
+        let removed = self.todos.remove(index);
+        self.last_deleted = Some((index, removed));
         self.dirty = true;
+        self.clamp_selection();
     }
 
     pub fn undo(&mut self) {
         if let Some((idx, item)) = self.last_deleted.take() {
             let insert_at = idx.min(self.todos.len());
-
             self.todos.insert(insert_at, item);
-            self.selected = insert_at;
             self.dirty = true;
+            self.select_real_index(insert_at);
         }
     }
 
@@ -178,8 +176,9 @@ impl App {
     }
 
     pub fn move_down(&mut self) {
-        if !self.todos.is_empty() {
-            self.selected = (self.selected + 1).min(self.todos.len() - 1);
+        let count = self.visible_indices().len();
+        if count > 0 {
+            self.selected = (self.selected + 1).min(count - 1);
         }
     }
 
@@ -187,18 +186,18 @@ impl App {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    pub fn enter_edit_mode(&mut self) {
+        if let Some(index) = self.current_index() {
+            self.input_buffer = self.todos[index].title.clone();
+            self.editing_index = Some(index);
+            self.mode = AppMode::Input;
+        }
+    }
+
     pub fn enter_input_mode(&mut self) {
         self.mode = AppMode::Input;
         self.input_buffer.clear();
         self.editing_index = None;
-    }
-
-    pub fn enter_edit_mode(&mut self) {
-        if let Some(item) = self.todos.get(self.selected) {
-            self.input_buffer = item.title.clone();
-            self.editing_index = Some(self.selected);
-            self.mode = AppMode::Input;
-        }
     }
 
     pub fn cancel_input(&mut self) {
@@ -212,17 +211,18 @@ impl App {
 
         if !title.is_empty() {
             match self.editing_index {
-                Some(idx) => {
-                    if let Some(item) = self.todos.get_mut(idx)
-                        && item.title != title {
-                            item.title = title;
-                            self.dirty = true;
-                        }
+                Some(index) => {
+                    if let Some(item) = self.todos.get_mut(index)
+                        && item.title != title
+                    {
+                        item.title = title;
+                        self.dirty = true;
+                    }
                 }
                 None => {
                     self.todos.push(TodoItem::new(title));
-                    self.selected = self.todos.len() - 1;
                     self.dirty = true;
+                    self.select_real_index(self.todos.len() - 1);
                 }
             }
         }
@@ -230,30 +230,29 @@ impl App {
         self.input_buffer.clear();
         self.editing_index = None;
         self.mode = AppMode::Normal;
+        self.clamp_selection();
     }
 
     pub fn cycle_priority(&mut self) {
-        if let Some(item) = self.todos.get_mut(self.selected) {
-            item.priority = item.priority.cycle();
+        if let Some(index) = self.current_index() {
+            self.todos[index].priority = self.todos[index].priority.cycle();
             self.dirty = true;
         }
     }
 
     pub fn enter_notes_mode(&mut self) {
-        if self.todos.is_empty() {
+        let Some(index) = self.current_index() else {
             return;
-        }
-
-        self.notes_buffer = self.todos[self.selected].notes.clone();
-
+        };
+        self.notes_buffer = self.todos[index].notes.clone();
         self.focused_pane = FocusedPane::Notes;
         self.mode = AppMode::EditingNotes;
     }
 
     pub fn commit_notes(&mut self) {
-        if let Some(item) = self.todos.get_mut(self.selected) {
-            if item.notes != self.notes_buffer {
-                item.notes = std::mem::take(&mut self.notes_buffer);
+        if let Some(index) = self.current_index() {
+            if self.todos[index].notes != self.notes_buffer {
+                self.todos[index].notes = std::mem::take(&mut self.notes_buffer);
                 self.dirty = true;
             } else {
                 self.notes_buffer.clear();
@@ -265,5 +264,62 @@ impl App {
     pub fn cancel_notes(&mut self) {
         self.notes_buffer.clear();
         self.mode = AppMode::Normal;
+    }
+
+    pub fn visible_indices(&self) -> Vec<usize> {
+        if self.search_query.is_empty() {
+            return (0..self.todos.len()).collect();
+        }
+        let query = self.search_query.to_lowercase();
+        self.todos
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.title.to_lowercase().contains(&query))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn current_index(&self) -> Option<usize> {
+        self.visible_indices().get(self.selected).copied()
+    }
+
+    fn clamp_selection(&mut self) {
+        let count = self.visible_indices().len();
+        self.selected = if count == 0 {
+            0
+        } else {
+            self.selected.min(count - 1)
+        };
+    }
+
+    fn select_real_index(&mut self, real_index: usize) {
+        if let Some(pos) = self.visible_indices().iter().position(|&i| i == real_index) {
+            self.selected = pos;
+        }
+    }
+
+    pub fn enter_search_mode(&mut self) {
+        self.mode = AppMode::Search;
+    }
+
+    pub fn push_search(&mut self, c: char) {
+        self.search_query.push(c);
+        self.clamp_selection();
+    }
+
+    pub fn backspace_search(&mut self) {
+        self.search_query.pop();
+        self.clamp_selection();
+    }
+
+    pub fn confirm_search(&mut self) {
+        self.mode = AppMode::Normal;
+        self.clamp_selection();
+    }
+
+    pub fn cancel_search(&mut self) {
+        self.search_query.clear();
+        self.mode = AppMode::Normal;
+        self.clamp_selection();
     }
 }
