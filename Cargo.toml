@@ -11,7 +11,7 @@ homepage = "https://github.com/u-nae/tudo"
 readme = "README.md"
 keywords = ["tui", "todo", "cli", "productivity", "ratatui"]
 categories = ["command-line-utilities"]
-exclude = ["docs/", "target/", "*.json"]
+exclude = ["docs/", "target/", "*.json", ".gitignore"]
 
 [dependencies]
 crossterm = "0.28.0"
