@@ -21,6 +21,21 @@ impl Priority {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubTask {
+    pub title: String,
+    pub completed: bool,
+}
+
+impl SubTask {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            completed: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
     pub title: String,
     pub completed: bool,
@@ -30,6 +45,12 @@ pub struct TodoItem {
 
     #[serde(default)]
     pub priority: Priority,
+
+    #[serde(default)]
+    pub subtasks: Vec<SubTask>,
+
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 impl TodoItem {
@@ -39,6 +60,8 @@ impl TodoItem {
             completed: false,
             notes: String::new(),
             priority: Priority::default(),
+            subtasks: Vec::new(),
+            collapsed: false,
         }
     }
 }
@@ -58,6 +81,36 @@ impl Group {
             todos: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowRef {
+    Todo(usize),
+    Sub(usize, usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputTarget {
+    #[default]
+    NewTodo,
+    NewSubtask(usize),
+    EditTodo(usize),
+    EditSubtask(usize, usize),
+}
+
+#[derive(Debug, Clone)]
+pub enum LastDeleted {
+    Todo {
+        group: usize,
+        index: usize,
+        item: TodoItem,
+    },
+    Sub {
+        group: usize,
+        todo: usize,
+        index: usize,
+        item: SubTask,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -96,10 +149,10 @@ pub struct App {
     pub dirty: bool,
 
     #[serde(skip)]
-    pub editing_index: Option<usize>,
+    pub input_target: InputTarget,
 
     #[serde(skip)]
-    pub last_deleted: Option<(usize, usize, TodoItem)>,
+    pub last_deleted: Option<LastDeleted>,
 
     #[serde(skip)]
     pub notes_buffer: String,
@@ -124,7 +177,7 @@ impl Default for App {
             input_buffer: String::new(),
             should_quit: false,
             dirty: false,
-            editing_index: None,
+            input_target: InputTarget::NewTodo,
             last_deleted: None,
             notes_buffer: String::new(),
             search_query: String::new(),
@@ -187,40 +240,93 @@ impl App {
     }
 
     pub fn toggle_selected(&mut self) {
-        let Some(index) = self.current_index() else {
+        let Some(row) = self.current_row() else {
             return;
         };
-        if let Some(group) = self.groups.get_mut(self.selected_group) {
-            group.todos[index].completed = !group.todos[index].completed;
-            self.dirty = true;
+        let Some(group) = self.groups.get_mut(self.selected_group) else {
+            return;
+        };
+        match row {
+            RowRef::Todo(i) => {
+                let new_state = !group.todos[i].completed;
+                group.todos[i].completed = new_state;
+                for sub in &mut group.todos[i].subtasks {
+                    sub.completed = new_state;
+                }
+            }
+            RowRef::Sub(i, j) => {
+                group.todos[i].subtasks[j].completed = !group.todos[i].subtasks[j].completed;
+            }
         }
+        self.dirty = true;
     }
 
     pub fn delete_selected(&mut self) {
-        let Some(index) = self.current_index() else {
+        let Some(row) = self.current_row() else {
             return;
         };
         let group_idx = self.selected_group;
-        if let Some(group) = self.groups.get_mut(group_idx) {
-            let removed = group.todos.remove(index);
-            self.last_deleted = Some((group_idx, index, removed));
-            self.dirty = true;
+        let Some(group) = self.groups.get_mut(group_idx) else {
+            return;
+        };
+        match row {
+            RowRef::Todo(i) => {
+                let item = group.todos.remove(i);
+                self.last_deleted = Some(LastDeleted::Todo {
+                    group: group_idx,
+                    index: i,
+                    item,
+                });
+            }
+            RowRef::Sub(i, j) => {
+                let item = group.todos[i].subtasks.remove(j);
+                self.last_deleted = Some(LastDeleted::Sub {
+                    group: group_idx,
+                    todo: i,
+                    index: j,
+                    item,
+                });
+            }
         }
+        self.dirty = true;
         self.clamp_selection();
     }
 
     pub fn undo(&mut self) {
-        let Some((group_idx, todo_idx, item)) = self.last_deleted.take() else {
+        let Some(deleted) = self.last_deleted.take() else {
             return;
         };
-        let Some(group) = self.groups.get_mut(group_idx) else {
-            return;
-        };
-        let insert_at = todo_idx.min(group.todos.len());
-        group.todos.insert(insert_at, item);
-        self.dirty = true;
-        self.selected_group = group_idx;
-        self.select_real_index(insert_at);
+        match deleted {
+            LastDeleted::Todo { group, index, item } => {
+                let Some(g) = self.groups.get_mut(group) else {
+                    return;
+                };
+                let at = index.min(g.todos.len());
+                g.todos.insert(at, item);
+                self.selected_group = group;
+                self.dirty = true;
+                self.select_row(RowRef::Todo(at));
+            }
+            LastDeleted::Sub {
+                group,
+                todo,
+                index,
+                item,
+            } => {
+                let Some(g) = self.groups.get_mut(group) else {
+                    return;
+                };
+                let Some(t) = g.todos.get_mut(todo) else {
+                    return;
+                };
+                let at = index.min(t.subtasks.len());
+                t.subtasks.insert(at, item);
+                t.collapsed = false;
+                self.selected_group = group;
+                self.dirty = true;
+                self.select_row(RowRef::Sub(todo, at));
+            }
+        }
     }
 
     pub fn toggle_help(&mut self) {
@@ -232,7 +338,7 @@ impl App {
     }
 
     pub fn move_down(&mut self) {
-        let count = self.visible_indices().len();
+        let count = self.visible_rows().len();
         if count > 0 {
             self.selected = (self.selected + 1).min(count - 1);
         }
@@ -243,87 +349,131 @@ impl App {
     }
 
     pub fn enter_edit_mode(&mut self) {
-        let Some(index) = self.current_index() else {
+        let Some(row) = self.current_row() else {
             return;
         };
-        if let Some(group) = self.groups.get(self.selected_group) {
-            self.input_buffer = group.todos[index].title.clone();
-            self.editing_index = Some(index);
-            self.mode = AppMode::Input;
-        }
+        let Some(group) = self.groups.get(self.selected_group) else {
+            return;
+        };
+        let (title, target) = match row {
+            RowRef::Todo(i) => (group.todos[i].title.clone(), InputTarget::EditTodo(i)),
+            RowRef::Sub(i, j) => (
+                group.todos[i].subtasks[j].title.clone(),
+                InputTarget::EditSubtask(i, j),
+            ),
+        };
+        self.input_buffer = title;
+        self.input_target = target;
+        self.mode = AppMode::Input;
     }
 
     pub fn enter_input_mode(&mut self) {
         self.mode = AppMode::Input;
         self.input_buffer.clear();
-        self.editing_index = None;
+        self.input_target = InputTarget::NewTodo;
     }
 
     pub fn cancel_input(&mut self) {
         self.mode = AppMode::Normal;
         self.input_buffer.clear();
-        self.editing_index = None;
+        self.input_target = InputTarget::NewTodo;
     }
 
     pub fn commit_input(&mut self) {
         let title = self.input_buffer.trim().to_owned();
+        let mut to_select: Option<RowRef> = None;
 
         if !title.is_empty() {
-            match self.editing_index {
-                Some(index) => {
-                    if let Some(group) = self.groups.get_mut(self.selected_group)
-                        && let Some(item) = group.todos.get_mut(index)
-                        && item.title != title
-                    {
-                        item.title = title;
+            match self.input_target {
+                InputTarget::NewTodo => {
+                    if let Some(group) = self.groups.get_mut(self.selected_group) {
+                        group.todos.push(TodoItem::new(title));
+                        to_select = Some(RowRef::Todo(group.todos.len() - 1));
                         self.dirty = true;
                     }
                 }
-                None => {
-                    if let Some(group) = self.groups.get_mut(self.selected_group) {
-                        group.todos.push(TodoItem::new(title));
+                InputTarget::NewSubtask(parent) => {
+                    if let Some(group) = self.groups.get_mut(self.selected_group)
+                        && let Some(todo) = group.todos.get_mut(parent)
+                    {
+                        todo.subtasks.push(SubTask::new(title));
+                        todo.collapsed = false;
+                        to_select = Some(RowRef::Sub(parent, todo.subtasks.len() - 1));
                         self.dirty = true;
                     }
-                    let last = self.current_todos().len().saturating_sub(1);
-                    self.select_real_index(last);
+                }
+                InputTarget::EditTodo(i) => {
+                    if let Some(group) = self.groups.get_mut(self.selected_group)
+                        && let Some(todo) = group.todos.get_mut(i)
+                        && todo.title != title
+                    {
+                        todo.title = title;
+                        self.dirty = true;
+                    }
+                }
+                InputTarget::EditSubtask(i, j) => {
+                    if let Some(group) = self.groups.get_mut(self.selected_group)
+                        && let Some(todo) = group.todos.get_mut(i)
+                        && let Some(sub) = todo.subtasks.get_mut(j)
+                        && sub.title != title
+                    {
+                        sub.title = title;
+                        self.dirty = true;
+                    }
                 }
             }
         }
 
         self.input_buffer.clear();
-        self.editing_index = None;
+        self.input_target = InputTarget::NewTodo;
         self.mode = AppMode::Normal;
+        if let Some(row) = to_select {
+            self.select_row(row);
+        }
         self.clamp_selection();
     }
 
+    pub fn enter_subtask_input(&mut self) {
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        let parent = match row {
+            RowRef::Todo(i) => i,
+            RowRef::Sub(i, _) => i,
+        };
+        self.input_buffer.clear();
+        self.input_target = InputTarget::NewSubtask(parent);
+        self.mode = AppMode::Input;
+    }
+
     pub fn cycle_priority(&mut self) {
-        let Some(index) = self.current_index() else {
+        let Some(RowRef::Todo(i)) = self.current_row() else {
             return;
         };
         if let Some(group) = self.groups.get_mut(self.selected_group) {
-            group.todos[index].priority = group.todos[index].priority.cycle();
+            group.todos[i].priority = group.todos[i].priority.cycle();
             self.dirty = true;
         }
     }
 
     pub fn enter_notes_mode(&mut self) {
-        let Some(index) = self.current_index() else {
+        let Some(RowRef::Todo(i)) = self.current_row() else {
             return;
         };
         if let Some(group) = self.groups.get(self.selected_group) {
-            self.notes_buffer = group.todos[index].notes.clone();
+            self.notes_buffer = group.todos[i].notes.clone();
             self.mode = AppMode::EditingNotes;
         }
     }
 
     pub fn commit_notes(&mut self) {
-        let Some(index) = self.current_index() else {
+        let Some(RowRef::Todo(i)) = self.current_row() else {
             self.mode = AppMode::Normal;
             return;
         };
         if let Some(group) = self.groups.get_mut(self.selected_group) {
-            if group.todos[index].notes != self.notes_buffer {
-                group.todos[index].notes = std::mem::take(&mut self.notes_buffer);
+            if group.todos[i].notes != self.notes_buffer {
+                group.todos[i].notes = std::mem::take(&mut self.notes_buffer);
                 self.dirty = true;
             } else {
                 self.notes_buffer.clear();
@@ -337,25 +487,28 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
-    pub fn visible_indices(&self) -> Vec<usize> {
+    pub fn visible_rows(&self) -> Vec<RowRef> {
         let Some(group) = self.groups.get(self.selected_group) else {
             return Vec::new();
         };
-        if self.search_query.is_empty() {
-            return (0..group.todos.len()).collect();
-        }
         let query = self.search_query.to_lowercase();
-        group
-            .todos
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.title.to_lowercase().contains(&query))
-            .map(|(index, _)| index)
-            .collect()
+        let mut rows = Vec::new();
+        for (i, todo) in group.todos.iter().enumerate() {
+            if !query.is_empty() && !todo.title.to_lowercase().contains(&query) {
+                continue;
+            }
+            rows.push(RowRef::Todo(i));
+            if !todo.collapsed {
+                for j in 0..todo.subtasks.len() {
+                    rows.push(RowRef::Sub(i, j));
+                }
+            }
+        }
+        rows
     }
 
-    pub fn current_index(&self) -> Option<usize> {
-        self.visible_indices().get(self.selected).copied()
+    pub fn current_row(&self) -> Option<RowRef> {
+        self.visible_rows().get(self.selected).copied()
     }
 
     pub fn current_todos(&self) -> &[TodoItem] {
@@ -373,7 +526,7 @@ impl App {
     }
 
     fn clamp_selection(&mut self) {
-        let count = self.visible_indices().len();
+        let count = self.visible_rows().len();
         self.selected = if count == 0 {
             0
         } else {
@@ -381,8 +534,8 @@ impl App {
         };
     }
 
-    fn select_real_index(&mut self, real_index: usize) {
-        if let Some(pos) = self.visible_indices().iter().position(|&i| i == real_index) {
+    fn select_row(&mut self, target: RowRef) {
+        if let Some(pos) = self.visible_rows().iter().position(|&r| r == target) {
             self.selected = pos;
         }
     }
@@ -438,6 +591,27 @@ impl App {
     fn reset_group_view(&mut self) {
         self.selected = 0;
         self.search_query.clear();
+    }
+
+    pub fn toggle_collapse(&mut self) {
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        let parent = match row {
+            RowRef::Todo(i) => i,
+            RowRef::Sub(i, _) => i,
+        };
+        if let Some(group) = self.groups.get_mut(self.selected_group) {
+            let Some(todo) = group.todos.get_mut(parent) else {
+                return;
+            };
+            if todo.subtasks.is_empty() {
+                return;
+            }
+            todo.collapsed = !todo.collapsed;
+        }
+        self.select_row(RowRef::Todo(parent));
+        self.clamp_selection();
     }
 
     pub fn enter_category_popup(&mut self) {

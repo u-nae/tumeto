@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
-use crate::app::{App, AppMode, Priority, TodoItem};
+use crate::app::{App, AppMode, InputTarget, Priority, RowRef, SubTask, TodoItem};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -204,15 +204,23 @@ fn render_notes_content(frame: &mut Frame, app: &App, area: Rect) {
     let content = if is_editing {
         app.notes_buffer.as_str()
     } else {
-        app.current_index()
-            .and_then(|index| app.current_todos().get(index))
-            .map(|item| item.notes.as_str())
-            .unwrap_or("")
+        match app.current_row() {
+            Some(RowRef::Todo(i)) => app
+                .current_todos()
+                .get(i)
+                .map(|item| item.notes.as_str())
+                .unwrap_or(""),
+            _ => "",
+        }
     };
 
     if content.is_empty() && !is_editing {
-        let placeholder = Paragraph::new("[ m ] 키로 메모를 작성하세요.")
-            .style(Style::default().fg(Color::DarkGray));
+        let message = if matches!(app.current_row(), Some(RowRef::Sub(_, _))) {
+            "하위 할 일에는 메모가 없습니다."
+        } else {
+            "[ m ] 키로 메모를 작성하세요."
+        };
+        let placeholder = Paragraph::new(message).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(placeholder, area);
     } else {
         let style = if is_editing {
@@ -233,11 +241,8 @@ fn render_notes_content(frame: &mut Frame, app: &App, area: Rect) {
 
         if is_editing {
             let last_line = wrapped_lines.last().unwrap_or(&String::new()).clone();
-
             let cursor_x = area.x + last_line.width() as u16;
-
             let cursor_y = area.y + wrapped_lines.len().saturating_sub(1) as u16;
-
             frame.set_cursor_position((
                 cursor_x.min(area.right().saturating_sub(1)),
                 cursor_y.min(area.bottom().saturating_sub(1)),
@@ -302,9 +307,9 @@ fn render_editing_notes(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
-    let visible = app.visible_indices();
+    let rows = app.visible_rows();
 
-    if visible.is_empty() {
+    if rows.is_empty() {
         let message = if app.search_query.is_empty() {
             "아직 할 일이 없습니다. [ a ] 를 눌러 추가하세요."
         } else {
@@ -318,9 +323,12 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let todos = app.current_todos();
-    let items: Vec<ListItem> = visible
+    let items: Vec<ListItem> = rows
         .iter()
-        .map(|&index| build_list_item(&todos[index]))
+        .map(|&row| match row {
+            RowRef::Todo(i) => build_todo_item(&todos[i]),
+            RowRef::Sub(i, j) => build_subtask_item(&todos[i].subtasks[j]),
+        })
         .collect();
 
     let list = List::new(items).highlight_style(
@@ -336,10 +344,19 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-fn build_list_item(todo: &TodoItem) -> ListItem<'_> {
+fn build_todo_item(todo: &TodoItem) -> ListItem<'_> {
+    let fold = if todo.subtasks.is_empty() {
+        Span::raw("  ")
+    } else if todo.collapsed {
+        Span::styled("▸ ", Style::default().fg(Color::DarkGray))
+    } else {
+        Span::styled("▾ ", Style::default().fg(Color::DarkGray))
+    };
+
     if todo.completed {
         return ListItem::new(Line::from(vec![
-            Span::styled(" [x] ", Style::default().fg(Color::Green)),
+            fold,
+            Span::styled("[x] ", Style::default().fg(Color::Green)),
             Span::styled(
                 todo.title.clone(),
                 Style::default()
@@ -355,6 +372,20 @@ fn build_list_item(todo: &TodoItem) -> ListItem<'_> {
         Priority::Low => Color::White,
     };
 
+    let mut spans = vec![
+        fold,
+        Span::styled("[ ] ", Style::default().fg(Color::White)),
+        Span::styled(todo.title.clone(), Style::default().fg(title_color)),
+    ];
+
+    if !todo.subtasks.is_empty() {
+        let done = todo.subtasks.iter().filter(|s| s.completed).count();
+        spans.push(Span::styled(
+            format!(" ({}/{})", done, todo.subtasks.len()),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
     let badge: Option<Span> = match todo.priority {
         Priority::High => Some(Span::styled(
             "  !!",
@@ -363,22 +394,38 @@ fn build_list_item(todo: &TodoItem) -> ListItem<'_> {
         Priority::Medium => Some(Span::styled("  ! ", Style::default().fg(Color::Yellow))),
         Priority::Low => None,
     };
-
-    let mut spans = vec![
-        Span::styled(" [ ] ", Style::default().fg(Color::White)),
-        Span::styled(todo.title.clone(), Style::default().fg(title_color)),
-    ];
-
     spans.extend(badge);
 
     ListItem::new(Line::from(spans))
 }
 
-fn render_input_box(frame: &mut Frame, app: &App, area: Rect) {
-    let (title, color) = if app.editing_index.is_some() {
-        (" 항목 편집 ", Color::Green)
+fn build_subtask_item(sub: &SubTask) -> ListItem<'_> {
+    let (checkbox, title_style) = if sub.completed {
+        (
+            Span::styled("[x] ", Style::default().fg(Color::Green)),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::CROSSED_OUT),
+        )
     } else {
-        (" 새 할 일 입력 ", Color::Yellow)
+        (
+            Span::styled("[ ] ", Style::default().fg(Color::White)),
+            Style::default().fg(Color::Gray),
+        )
+    };
+
+    ListItem::new(Line::from(vec![
+        Span::styled("    └ ", Style::default().fg(Color::DarkGray)),
+        checkbox,
+        Span::styled(sub.title.clone(), title_style),
+    ]))
+}
+
+fn render_input_box(frame: &mut Frame, app: &App, area: Rect) {
+    let (title, color) = match app.input_target {
+        InputTarget::NewTodo => (" 새 할 일 입력 ", Color::Yellow),
+        InputTarget::NewSubtask(_) => (" 하위 할 일 입력 ", Color::Yellow),
+        InputTarget::EditTodo(_) | InputTarget::EditSubtask(_, _) => (" 항목 편집 ", Color::Green),
     };
 
     let input_box = Paragraph::new(app.input_buffer.as_str())
@@ -435,7 +482,7 @@ fn render_search_box(frame: &mut Frame, app: &App, area: Rect) {
 fn render_footer(frame: &mut Frame, area: Rect, mode: FooterMode) {
     let text = match mode {
         FooterMode::Normal => {
-            "[ Tab/h/l ] 그룹  [ c ] 카테고리  [ j/k ] 항목  [ a/e/d ] 편집  [ p ] 우선순위  [ / ] 검색  [ ? ] 도움말  [ q ] 종료"
+            "[ Tab/h/l ] 그룹  [ c ] 카테고리  [ j/k ] 항목  [ a/s ] 추가  [ e/d ] 편집  [ z ] 접기  [ / ] 검색  [ ? ] 도움말  [ q ] 종료"
         }
         FooterMode::Input => "[ Enter ] 저장  [ Esc ] 취소",
         FooterMode::EditingNotes => {
@@ -479,11 +526,19 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Space      ", key),
-            Span::styled("완료 토글", desc),
+            Span::styled("완료 토글 (상위 토글 시 하위까지)", desc),
         ]),
         Line::from(vec![
             Span::styled("  a / i      ", key),
             Span::styled("새 항목 추가", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  s          ", key),
+            Span::styled("하위 할 일 추가", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  z          ", key),
+            Span::styled("하위 할 일 접기 / 펼치기", desc),
         ]),
         Line::from(vec![
             Span::styled("  e          ", key),

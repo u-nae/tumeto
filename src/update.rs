@@ -67,6 +67,10 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
 
         KeyCode::Char('p') => app.cycle_priority(),
 
+        KeyCode::Char('s') => app.enter_subtask_input(),
+
+        KeyCode::Char('z') => app.toggle_collapse(),
+
         KeyCode::Char('/') => app.enter_search_mode(),
 
         _ => {}
