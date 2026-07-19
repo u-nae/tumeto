@@ -30,6 +30,8 @@ pub fn handle_events(app: &mut App) -> io::Result<()> {
             AppMode::Help => app.toggle_help(),
             AppMode::EditingNotes => handle_editing_notes_mode(app, key.code),
             AppMode::CategoryPopup => handle_category_popup(app, key.code),
+            AppMode::GroupInput => handle_group_input(app, key.code),
+            AppMode::GroupDeleteConfirm => handle_group_delete_confirm(app, key.code),
         }
     }
     Ok(())
@@ -117,8 +119,31 @@ fn handle_category_popup(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up | KeyCode::Char('k') => app.category_cursor_up(),
         KeyCode::Down | KeyCode::Char('j') => app.category_cursor_down(),
+        KeyCode::Char('n') => app.enter_group_add(),
+        KeyCode::Char('r') => app.enter_group_rename(),
+        KeyCode::Char('d') => app.enter_group_delete_confirm(),
         KeyCode::Enter => app.confirm_category_popup(),
         KeyCode::Esc => app.cancel_category_popup(),
+        _ => {}
+    }
+}
+
+fn handle_group_input(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Enter => app.commit_group_input(),
+        KeyCode::Esc => app.cancel_group_input(),
+        KeyCode::Backspace => {
+            let _ = app.input_buffer.pop();
+        }
+        KeyCode::Char(c) => app.input_buffer.push(c),
+        _ => {}
+    }
+}
+
+fn handle_group_delete_confirm(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_group_delete(),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_group_delete(),
         _ => {}
     }
 }

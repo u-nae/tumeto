@@ -33,6 +33,16 @@ pub fn render(frame: &mut Frame, app: &App) {
             render_normal(frame, app, inner_area);
             render_category_popup(frame, app, area);
         }
+        AppMode::GroupInput => {
+            render_normal(frame, app, inner_area);
+            render_category_popup(frame, app, area);
+            render_group_input(frame, app, area);
+        }
+        AppMode::GroupDeleteConfirm => {
+            render_normal(frame, app, inner_area);
+            render_category_popup(frame, app, area);
+            render_group_delete_confirm(frame, app, area);
+        }
     }
 }
 
@@ -593,6 +603,18 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled("해당 그룹으로 이동", desc),
         ]),
         Line::from(vec![
+            Span::styled("  n          ", key),
+            Span::styled("새 그룹 추가", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  r          ", key),
+            Span::styled("커서 그룹 이름 변경", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  d          ", key),
+            Span::styled("커서 그룹 삭제 (확인)", desc),
+        ]),
+        Line::from(vec![
             Span::styled("  Esc        ", key),
             Span::styled("취소", desc),
         ]),
@@ -630,9 +652,21 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
 }
 
 fn render_category_popup(frame: &mut Frame, app: &App, area: Rect) {
-    let popup_area = centered_rect(40, 60, area);
+    let popup_area = centered_rect(44, 60, area);
 
     frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" 카테고리 [ c ] ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
 
     let items: Vec<ListItem> = app
         .groups
@@ -651,24 +685,88 @@ fn render_category_popup(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(" 카테고리 [ c ] ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Magenta)),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(items).highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let mut state = ListState::default();
     state.select(Some(app.category_cursor));
 
-    frame.render_stateful_widget(list, popup_area, &mut state);
+    frame.render_stateful_widget(list, chunks[0], &mut state);
+
+    let hint =
+        Paragraph::new("[ n ] 추가  [ r ] 이름변경  [ d ] 삭제  [ Enter ] 이동  [ Esc ] 닫기")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+    frame.render_widget(hint, chunks[1]);
+}
+
+fn render_group_input(frame: &mut Frame, app: &App, area: Rect) {
+    let popup = centered_fixed(40, 3, area);
+    frame.render_widget(Clear, popup);
+
+    let title = if app.group_editing.is_some() {
+        " 그룹 이름 변경 "
+    } else {
+        " 새 그룹 이름 "
+    };
+
+    let input = Paragraph::new(app.input_buffer.as_str())
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)),
+        )
+        .style(Style::default().fg(Color::Green));
+
+    frame.render_widget(input, popup);
+
+    let cursor_x =
+        (popup.x + 1 + app.input_buffer.width() as u16).min(popup.right().saturating_sub(2));
+    frame.set_cursor_position((cursor_x, popup.y + 1));
+}
+
+fn render_group_delete_confirm(frame: &mut Frame, app: &App, area: Rect) {
+    let popup = centered_fixed(52, 6, area);
+    frame.render_widget(Clear, popup);
+
+    let (name, count) = app
+        .groups
+        .get(app.category_cursor)
+        .map(|g| (g.name.as_str(), g.todos.len()))
+        .unwrap_or(("", 0));
+
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("'{name}' 그룹을 삭제할까요?"),
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            format!("포함된 할 일 {count}개가 함께 삭제됩니다."),
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "[ y ] 삭제   ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("[ n ] 취소", Style::default().fg(Color::White)),
+        ]),
+    ];
+
+    let confirm = Paragraph::new(lines).block(
+        Block::default()
+            .title(" 그룹 삭제 확인 ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red)),
+    );
+
+    frame.render_widget(confirm, popup);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -689,6 +787,17 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+fn centered_fixed(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 enum FooterMode {

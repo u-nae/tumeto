@@ -69,6 +69,8 @@ pub enum AppMode {
     EditingNotes,
     Search,
     CategoryPopup,
+    GroupInput,
+    GroupDeleteConfirm,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -107,6 +109,9 @@ pub struct App {
 
     #[serde(skip)]
     pub category_cursor: usize,
+
+    #[serde(skip)]
+    pub group_editing: Option<usize>,
 }
 
 impl Default for App {
@@ -124,6 +129,7 @@ impl Default for App {
             notes_buffer: String::new(),
             search_query: String::new(),
             category_cursor: 0,
+            group_editing: None,
         }
     }
 }
@@ -456,5 +462,81 @@ impl App {
 
     pub fn cancel_category_popup(&mut self) {
         self.mode = AppMode::Normal;
+    }
+
+    pub fn enter_group_add(&mut self) {
+        self.group_editing = None;
+        self.input_buffer.clear();
+        self.mode = AppMode::GroupInput;
+    }
+
+    pub fn enter_group_rename(&mut self) {
+        if let Some(group) = self.groups.get(self.category_cursor) {
+            self.input_buffer = group.name.clone();
+            self.group_editing = Some(self.category_cursor);
+            self.mode = AppMode::GroupInput;
+        }
+    }
+
+    pub fn commit_group_input(&mut self) {
+        let name = self.input_buffer.trim().to_owned();
+        if !name.is_empty() {
+            match self.group_editing {
+                Some(i) => {
+                    if let Some(group) = self.groups.get_mut(i)
+                        && group.name != name
+                    {
+                        group.name = name;
+                        self.dirty = true;
+                    }
+                }
+                None => {
+                    self.groups.push(Group::new(name));
+                    self.category_cursor = self.groups.len() - 1;
+                    self.dirty = true;
+                }
+            }
+        }
+        self.input_buffer.clear();
+        self.group_editing = None;
+        self.mode = AppMode::CategoryPopup;
+    }
+
+    pub fn cancel_group_input(&mut self) {
+        self.input_buffer.clear();
+        self.group_editing = None;
+        self.mode = AppMode::CategoryPopup;
+    }
+
+    pub fn enter_group_delete_confirm(&mut self) {
+        if self.groups.len() <= 1 {
+            return;
+        }
+        self.mode = AppMode::GroupDeleteConfirm;
+    }
+
+    pub fn confirm_group_delete(&mut self) {
+        if self.groups.len() <= 1 {
+            self.mode = AppMode::CategoryPopup;
+            return;
+        }
+        let target = self.category_cursor.min(self.groups.len() - 1);
+        self.groups.remove(target);
+
+        if self.selected_group == target {
+            self.selected_group = self.selected_group.min(self.groups.len() - 1);
+            self.reset_group_view();
+        } else if self.selected_group > target {
+            self.selected_group -= 1;
+        }
+
+        self.category_cursor = self.category_cursor.min(self.groups.len() - 1);
+        self.last_deleted = None;
+        self.dirty = true;
+        self.mode = AppMode::CategoryPopup;
+    }
+
+    pub fn cancel_group_delete(&mut self) {
+        self.mode = AppMode::CategoryPopup;
     }
 }
