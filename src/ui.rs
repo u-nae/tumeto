@@ -489,7 +489,6 @@ fn render_footer(frame: &mut Frame, area: Rect, mode: FooterMode) {
             "[ Ctrl+S ] 메모 저장  [ Esc ] 취소  [ Enter ] 줄 바꿈  [ Backspace ] 삭제"
         }
         FooterMode::Search => "[ Enter ] 검색 확정  [ Esc ] 검색 해제  [ 문자 ] 실시간 필터",
-        FooterMode::CategoryPopup => "[ ↑/↓ ] 선택  [ Enter ] 이동  [ Esc ] 취소",
     };
 
     let footer = Paragraph::new(text)
@@ -860,5 +859,4 @@ enum FooterMode {
     Input,
     EditingNotes,
     Search,
-    CategoryPopup,
 }

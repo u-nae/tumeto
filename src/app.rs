@@ -518,13 +518,6 @@ impl App {
             .unwrap_or(&[])
     }
 
-    pub fn current_group_name(&self) -> &str {
-        self.groups
-            .get(self.selected_group)
-            .map(|g| g.name.as_str())
-            .unwrap_or("")
-    }
-
     fn clamp_selection(&mut self) {
         let count = self.visible_rows().len();
         self.selected = if count == 0 {
