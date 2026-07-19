@@ -29,6 +29,7 @@ pub fn handle_events(app: &mut App) -> io::Result<()> {
             AppMode::Search => handle_search_mode(app, key.code),
             AppMode::Help => app.toggle_help(),
             AppMode::EditingNotes => handle_editing_notes_mode(app, key.code),
+            AppMode::CategoryPopup => handle_category_popup(app, key.code),
         }
     }
     Ok(())
@@ -53,7 +54,12 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
 
         KeyCode::Char('?') => app.toggle_help(),
 
-        KeyCode::Tab => app.toggle_pane(),
+        // KeyCode::Tab => app.toggle_pane(),
+        KeyCode::Tab | KeyCode::Char('l') => app.next_group(),
+
+        KeyCode::BackTab | KeyCode::Char('h') => app.prev_group(),
+
+        KeyCode::Char('c') => app.enter_category_popup(),
 
         KeyCode::Char('m') => app.enter_notes_mode(),
 
@@ -103,6 +109,16 @@ fn handle_search_mode(app: &mut App, key: KeyCode) {
         KeyCode::Esc => app.cancel_search(),
         KeyCode::Backspace => app.backspace_search(),
         KeyCode::Char(c) => app.push_search(c),
+        _ => {}
+    }
+}
+
+fn handle_category_popup(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => app.category_cursor_up(),
+        KeyCode::Down | KeyCode::Char('j') => app.category_cursor_down(),
+        KeyCode::Enter => app.confirm_category_popup(),
+        KeyCode::Esc => app.cancel_category_popup(),
         _ => {}
     }
 }

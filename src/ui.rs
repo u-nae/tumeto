@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
-use crate::app::{App, AppMode, FocusedPane, Priority, TodoItem};
+use crate::app::{App, AppMode, Priority, TodoItem};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -29,17 +29,117 @@ pub fn render(frame: &mut Frame, app: &App) {
             render_help_overlay(frame, area);
         }
         AppMode::EditingNotes => render_editing_notes(frame, app, inner_area),
+        AppMode::CategoryPopup => {
+            render_normal(frame, app, inner_area);
+            render_category_popup(frame, app, area);
+        }
     }
 }
 
 fn render_normal(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
-    render_content(frame, app, chunks[0]);
-    render_footer(frame, chunks[1], FooterMode::Normal);
+    render_tab_bar(frame, app, chunks[0]);
+    render_content(frame, app, chunks[1]);
+    render_footer(frame, chunks[2], FooterMode::Normal);
+}
+
+fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+    if app.groups.is_empty() {
+        return;
+    }
+
+    let selected = app.selected_group;
+    let separator = " │ ";
+    let sep_w = separator.width() as u16;
+
+    let tab_widths: Vec<u16> = app
+        .groups
+        .iter()
+        .map(|g| g.name.width() as u16 + 2)
+        .collect();
+
+    let total: u16 =
+        tab_widths.iter().sum::<u16>() + sep_w * app.groups.len().saturating_sub(1) as u16;
+
+    let (start, end) = if total <= area.width {
+        (0, app.groups.len())
+    } else {
+        tab_window(&tab_widths, selected, sep_w, area.width.saturating_sub(2))
+    };
+
+    let active = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let inactive = Style::default().fg(Color::White);
+    let arrow = Style::default().fg(Color::DarkGray);
+
+    let mut spans: Vec<Span> = Vec::new();
+
+    spans.push(if start > 0 {
+        Span::styled("◀", arrow)
+    } else {
+        Span::raw(" ")
+    });
+
+    for i in start..end {
+        if i > start {
+            spans.push(Span::raw(separator));
+        }
+        let label = format!(" {} ", app.groups[i].name);
+        let style = if i == selected { active } else { inactive };
+        spans.push(Span::styled(label, style));
+    }
+
+    spans.push(if end < app.groups.len() {
+        Span::styled("▶", arrow)
+    } else {
+        Span::raw(" ")
+    });
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn tab_window(tab_widths: &[u16], selected: usize, sep_w: u16, max_width: u16) -> (usize, usize) {
+    let mut start = selected;
+    let mut end = selected + 1;
+    let mut width = tab_widths[selected];
+
+    loop {
+        let can_left = start > 0;
+        let can_right = end < tab_widths.len();
+
+        let left_cost = if can_left {
+            tab_widths[start - 1].saturating_add(sep_w)
+        } else {
+            u16::MAX
+        };
+        let right_cost = if can_right {
+            tab_widths[end].saturating_add(sep_w)
+        } else {
+            u16::MAX
+        };
+
+        if can_right && width.saturating_add(right_cost) <= max_width {
+            width = width.saturating_add(right_cost);
+            end += 1;
+        } else if can_left && width.saturating_add(left_cost) <= max_width {
+            width = width.saturating_add(left_cost);
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+
+    (start, end)
 }
 
 fn render_content(frame: &mut Frame, app: &App, area: Rect) {
@@ -53,12 +153,6 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_list_pane(frame: &mut Frame, app: &App, area: Rect) {
-    let border_style = if app.focused_pane == FocusedPane::List {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
     let title = if app.search_query.is_empty() {
         " 할 일 ".to_string()
     } else {
@@ -68,7 +162,7 @@ fn render_list_pane(frame: &mut Frame, app: &App, area: Rect) {
     let panel = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(border_style);
+        .border_style(Style::default().fg(Color::White));
 
     let inner = panel.inner(area);
     frame.render_widget(panel, area);
@@ -80,8 +174,6 @@ fn render_notes_pane(frame: &mut Frame, app: &App, area: Rect) {
 
     let (title, border_color) = if is_editing {
         (" 메모 (편집 중) ", Color::Yellow)
-    } else if app.focused_pane == FocusedPane::Notes {
-        (" 메모 ", Color::White)
     } else {
         (" 메모 ", Color::DarkGray)
     };
@@ -103,7 +195,8 @@ fn render_notes_content(frame: &mut Frame, app: &App, area: Rect) {
         app.notes_buffer.as_str()
     } else {
         app.current_index()
-            .map(|index| app.todos[index].notes.as_str())
+            .and_then(|index| app.current_todos().get(index))
+            .map(|item| item.notes.as_str())
             .unwrap_or("")
     };
 
@@ -170,25 +263,32 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(3),
             Constraint::Length(1),
         ])
         .split(area);
 
-    render_content(frame, app, chunks[0]);
-    render_input_box(frame, app, chunks[1]);
-    render_footer(frame, chunks[2], FooterMode::Input);
+    render_tab_bar(frame, app, chunks[0]);
+    render_content(frame, app, chunks[1]);
+    render_input_box(frame, app, chunks[2]);
+    render_footer(frame, chunks[3], FooterMode::Input);
 }
 
 fn render_editing_notes(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
-    render_content(frame, app, chunks[0]);
-    render_footer(frame, chunks[1], FooterMode::EditingNotes);
+    render_tab_bar(frame, app, chunks[0]);
+    render_content(frame, app, chunks[1]);
+    render_footer(frame, chunks[2], FooterMode::EditingNotes);
 }
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
@@ -207,9 +307,10 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let todos = app.current_todos();
     let items: Vec<ListItem> = visible
         .iter()
-        .map(|&index| build_list_item(&app.todos[index]))
+        .map(|&index| build_list_item(&todos[index]))
         .collect();
 
     let list = List::new(items).highlight_style(
@@ -291,15 +392,17 @@ fn render_search(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(3),
             Constraint::Length(1),
         ])
         .split(area);
 
-    render_content(frame, app, chunks[0]);
-    render_search_box(frame, app, chunks[1]);
-    render_footer(frame, chunks[2], FooterMode::Search);
+    render_tab_bar(frame, app, chunks[0]);
+    render_content(frame, app, chunks[1]);
+    render_search_box(frame, app, chunks[2]);
+    render_footer(frame, chunks[3], FooterMode::Search);
 }
 
 fn render_search_box(frame: &mut Frame, app: &App, area: Rect) {
@@ -322,13 +425,14 @@ fn render_search_box(frame: &mut Frame, app: &App, area: Rect) {
 fn render_footer(frame: &mut Frame, area: Rect, mode: FooterMode) {
     let text = match mode {
         FooterMode::Normal => {
-            "[ j/k ] 이동  [ a/e/d ] 추가·편집·삭제  [ p ] 우선순위  [ u ] 되돌리기  [ ? ] 도움말  [ q ] 종료"
+            "[ Tab/h/l ] 그룹  [ c ] 카테고리  [ j/k ] 항목  [ a/e/d ] 편집  [ p ] 우선순위  [ / ] 검색  [ ? ] 도움말  [ q ] 종료"
         }
         FooterMode::Input => "[ Enter ] 저장  [ Esc ] 취소",
         FooterMode::EditingNotes => {
             "[ Ctrl+S ] 메모 저장  [ Esc ] 취소  [ Enter ] 줄 바꿈  [ Backspace ] 삭제"
         }
         FooterMode::Search => "[ Enter ] 검색 확정  [ Esc ] 검색 해제  [ 문자 ] 실시간 필터",
+        FooterMode::CategoryPopup => "[ ↑/↓ ] 선택  [ Enter ] 이동  [ Esc ] 취소",
     };
 
     let footer = Paragraph::new(text)
@@ -384,8 +488,16 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled("삭제 되돌리기 (Undo)", desc),
         ]),
         Line::from(vec![
-            Span::styled("  Tab        ", key),
-            Span::styled("패널 포커스 전환", desc),
+            Span::styled("  Tab / l    ", key),
+            Span::styled("다음 그룹", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  S-Tab / h  ", key),
+            Span::styled("이전 그룹", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  c          ", key),
+            Span::styled("카테고리 점프 팝업", desc),
         ]),
         Line::from(vec![
             Span::styled("  m          ", key),
@@ -466,6 +578,25 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled("검색 해제 (전체 표시)", desc),
         ]),
         Line::from(""),
+        Line::from(Span::styled(" 카테고리 팝업", head)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ↑ / k      ", key),
+            Span::styled("커서 위로", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  ↓ / j      ", key),
+            Span::styled("커서 아래로", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter      ", key),
+            Span::styled("해당 그룹으로 이동", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc        ", key),
+            Span::styled("취소", desc),
+        ]),
+        Line::from(""),
         Line::from(Span::styled(" 메모 편집 모드", head)),
         Line::from(""),
         Line::from(vec![
@@ -498,6 +629,48 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
     frame.render_widget(popup, popup_area);
 }
 
+fn render_category_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let popup_area = centered_rect(40, 60, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = app
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(i, group)| {
+            let marker = if i == app.selected_group {
+                "● "
+            } else {
+                "  "
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(marker, Style::default().fg(Color::Green)),
+                Span::styled(group.name.clone(), Style::default().fg(Color::White)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(" 카테고리 [ c ] ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Magenta)),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    let mut state = ListState::default();
+    state.select(Some(app.category_cursor));
+
+    frame.render_stateful_widget(list, popup_area, &mut state);
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -523,4 +696,5 @@ enum FooterMode {
     Input,
     EditingNotes,
     Search,
+    CategoryPopup,
 }
