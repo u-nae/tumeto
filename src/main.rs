@@ -9,7 +9,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::{error::Error, io};
+use std::{error::Error, io, time::Instant};
 
 fn main() -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
@@ -39,7 +39,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+    let mut last_tick = Instant::now();
+
     loop {
+        let now = Instant::now();
+        app.tick_timer(now.saturating_duration_since(last_tick));
+        last_tick = now;
+
         terminal.draw(|frame| ui::render(frame, app))?;
         update::handle_events(app)?;
 

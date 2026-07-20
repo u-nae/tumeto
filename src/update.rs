@@ -1,10 +1,10 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use std::io;
+use std::{io, time::Duration};
 
 use crate::app::{App, AppMode};
 
 pub fn handle_events(app: &mut App) -> io::Result<()> {
-    if event::poll(std::time::Duration::from_millis(16))?
+    if event::poll(std::time::Duration::from_millis(100))?
         && let Event::Key(key) = event::read()?
     {
         if key.kind != KeyEventKind::Press {
@@ -66,6 +66,10 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Char('m') => app.enter_notes_mode(),
 
         KeyCode::Char('p') => app.cycle_priority(),
+
+        KeyCode::Char('t') => app.toggle_timer(),
+
+        KeyCode::Char('T') => app.cancel_timer(),
 
         KeyCode::Char('s') => app.enter_subtask_input(),
 
