@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
-use crate::app::{App, AppMode, InputTarget, Priority, RowRef, SubTask, TodoItem};
+use crate::app::{App, AppMode, InputTarget, Priority, RowRef, SubTask, TodoItem, TodoStatus};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -353,7 +353,8 @@ fn build_todo_item(todo: &TodoItem) -> ListItem<'_> {
         Span::styled("▾ ", Style::default().fg(Color::DarkGray))
     };
 
-    if todo.completed {
+    // 완료: 취소선 + DarkGray (우선순위 색보다 완료 표시가 우선)
+    if todo.status.is_done() {
         return ListItem::new(Line::from(vec![
             fold,
             Span::styled("[x] ", Style::default().fg(Color::Green)),
@@ -366,20 +367,41 @@ fn build_todo_item(todo: &TodoItem) -> ListItem<'_> {
         ]));
     }
 
-    let title_color = match todo.priority {
-        Priority::High => Color::Red,
-        Priority::Medium => Color::Yellow,
-        Priority::Low => Color::White,
+    let in_progress = matches!(todo.status, TodoStatus::InProgress);
+
+    let checkbox = if in_progress {
+        Span::styled(
+            "[>] ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled("[ ] ", Style::default().fg(Color::White))
+    };
+
+    // 진행 중이면 포커스 유도를 위해 제목을 강조, 아니면 우선순위 색
+    let title_style = if in_progress {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        let color = match todo.priority {
+            Priority::High => Color::Red,
+            Priority::Medium => Color::Yellow,
+            Priority::Low => Color::White,
+        };
+        Style::default().fg(color)
     };
 
     let mut spans = vec![
         fold,
-        Span::styled("[ ] ", Style::default().fg(Color::White)),
-        Span::styled(todo.title.clone(), Style::default().fg(title_color)),
+        checkbox,
+        Span::styled(todo.title.clone(), title_style),
     ];
 
     if !todo.subtasks.is_empty() {
-        let done = todo.subtasks.iter().filter(|s| s.completed).count();
+        let done = todo.subtasks.iter().filter(|s| s.status.is_done()).count();
         spans.push(Span::styled(
             format!(" ({}/{})", done, todo.subtasks.len()),
             Style::default().fg(Color::DarkGray),
@@ -400,18 +422,26 @@ fn build_todo_item(todo: &TodoItem) -> ListItem<'_> {
 }
 
 fn build_subtask_item(sub: &SubTask) -> ListItem<'_> {
-    let (checkbox, title_style) = if sub.completed {
-        (
+    let (checkbox, title_style) = match sub.status {
+        TodoStatus::Done => (
             Span::styled("[x] ", Style::default().fg(Color::Green)),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::CROSSED_OUT),
-        )
-    } else {
-        (
+        ),
+        TodoStatus::InProgress => (
+            Span::styled(
+                "[>] ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Style::default().fg(Color::Cyan),
+        ),
+        TodoStatus::Todo => (
             Span::styled("[ ] ", Style::default().fg(Color::White)),
             Style::default().fg(Color::Gray),
-        )
+        ),
     };
 
     ListItem::new(Line::from(vec![
@@ -525,7 +555,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Space      ", key),
-            Span::styled("완료 토글 (상위 토글 시 하위까지)", desc),
+            Span::styled("상태 순환 [ ] → [>] → [x] (상위 순환 시 하위까지)", desc),
         ]),
         Line::from(vec![
             Span::styled("  a / i      ", key),

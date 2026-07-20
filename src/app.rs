@@ -20,17 +20,60 @@ impl Priority {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TodoStatus {
+    #[default]
+    Todo,
+    InProgress,
+    Done,
+}
+
+impl TodoStatus {
+    /// Todo → InProgress → Done → Todo 순환.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Todo => Self::InProgress,
+            Self::InProgress => Self::Done,
+            Self::Done => Self::Todo,
+        }
+    }
+
+    pub fn is_done(self) -> bool {
+        matches!(self, Self::Done)
+    }
+}
+
+fn de_status_compat<'de, D>(deserializer: D) -> Result<TodoStatus, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Compat {
+        Status(TodoStatus), // 신 포맷: "Todo" / "InProgress" / "Done"
+        Legacy(bool),       // 구 포맷: true / false
+    }
+
+    Ok(match Compat::deserialize(deserializer)? {
+        Compat::Status(s) => s,
+        Compat::Legacy(true) => TodoStatus::Done,
+        Compat::Legacy(false) => TodoStatus::Todo,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubTask {
     pub title: String,
-    pub completed: bool,
+
+    #[serde(default, alias = "completed", deserialize_with = "de_status_compat")]
+    pub status: TodoStatus,
 }
 
 impl SubTask {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
-            completed: false,
+            status: TodoStatus::default(),
         }
     }
 }
@@ -38,7 +81,9 @@ impl SubTask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
     pub title: String,
-    pub completed: bool,
+
+    #[serde(default, alias = "completed", deserialize_with = "de_status_compat")]
+    pub status: TodoStatus,
 
     #[serde(default)]
     pub notes: String,
@@ -57,7 +102,7 @@ impl TodoItem {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
-            completed: false,
+            status: TodoStatus::default(),
             notes: String::new(),
             priority: Priority::default(),
             subtasks: Vec::new(),
@@ -197,9 +242,10 @@ struct LegacyApp {
 
 impl App {
     pub fn load() -> Self {
-        let path = Self::data_file_path();
+        let content = std::fs::read_to_string(Self::data_file_path())
+            .or_else(|_| std::fs::read_to_string(Self::legacy_data_file_path()));
 
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Ok(content) = content else {
             return Self::default();
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
@@ -233,13 +279,21 @@ impl App {
     }
 
     fn data_file_path() -> PathBuf {
+        Self::home_dir().join(".tumeto_data.json")
+    }
+
+    fn legacy_data_file_path() -> PathBuf {
+        Self::home_dir().join(".tudo_data.json")
+    }
+
+    fn home_dir() -> PathBuf {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".tumeto_data.json")
+        PathBuf::from(home)
     }
 
-    pub fn toggle_selected(&mut self) {
+    pub fn cycle_status(&mut self) {
         let Some(row) = self.current_row() else {
             return;
         };
@@ -248,14 +302,15 @@ impl App {
         };
         match row {
             RowRef::Todo(i) => {
-                let new_state = !group.todos[i].completed;
-                group.todos[i].completed = new_state;
+                let next = group.todos[i].status.cycle();
+                group.todos[i].status = next;
                 for sub in &mut group.todos[i].subtasks {
-                    sub.completed = new_state;
+                    sub.status = next;
                 }
             }
             RowRef::Sub(i, j) => {
-                group.todos[i].subtasks[j].completed = !group.todos[i].subtasks[j].completed;
+                let sub = &mut group.todos[i].subtasks[j];
+                sub.status = sub.status.cycle();
             }
         }
         self.dirty = true;

@@ -42,9 +42,10 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Char('q') => app.should_quit = true,
 
         KeyCode::Char('j') | KeyCode::Down => app.move_down(),
+
         KeyCode::Char('k') | KeyCode::Up => app.move_up(),
 
-        KeyCode::Char(' ') => app.toggle_selected(),
+        KeyCode::Char(' ') => app.cycle_status(),
 
         KeyCode::Char('a') | KeyCode::Char('i') => app.enter_input_mode(),
 
@@ -56,7 +57,6 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
 
         KeyCode::Char('?') => app.toggle_help(),
 
-        // KeyCode::Tab => app.toggle_pane(),
         KeyCode::Tab | KeyCode::Char('l') => app.next_group(),
 
         KeyCode::BackTab | KeyCode::Char('h') => app.prev_group(),
