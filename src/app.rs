@@ -217,6 +217,7 @@ pub enum AppMode {
     CategoryPopup,
     GroupInput,
     GroupDeleteConfirm,
+    Zen,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -658,6 +659,9 @@ impl App {
 
     pub fn cancel_timer(&mut self) {
         self.timer = None;
+        if self.mode == AppMode::Zen {
+            self.mode = AppMode::Normal;
+        }
     }
 
     pub fn tick_timer(&mut self, elapsed: Duration) {
@@ -683,6 +687,10 @@ impl App {
             todo.pomodoros = todo.pomodoros.saturating_add(1);
             self.dirty = true;
         }
+
+        if self.mode == AppMode::Zen {
+            self.mode = AppMode::Normal;
+        }
     }
 
     pub fn active_timer_todo(&self) -> Option<(&Group, &TodoItem)> {
@@ -690,6 +698,47 @@ impl App {
         let group = self.groups.get(target.group)?;
         let todo = group.todos.get(target.todo)?;
         Some((group, todo))
+    }
+
+    pub fn enter_zen_mode(&mut self) {
+        if self.timer.is_none() {
+            self.toggle_timer();
+        }
+        if self.active_timer_todo().is_some() {
+            self.mode = AppMode::Zen;
+        }
+    }
+
+    pub fn exit_zen_mode(&mut self) {
+        self.mode = AppMode::Normal;
+    }
+
+    pub fn toggle_active_timer(&mut self) {
+        if let Some(timer) = self.timer.as_mut() {
+            timer.running = !timer.running;
+        }
+    }
+
+    pub fn complete_active_timer_todo(&mut self) {
+        let Some(target) = self.timer.as_ref().map(|timer| timer.target) else {
+            self.mode = AppMode::Normal;
+            return;
+        };
+
+        if let Some(todo) = self
+            .groups
+            .get_mut(target.group)
+            .and_then(|group| group.todos.get_mut(target.todo))
+        {
+            todo.status = TodoStatus::Done;
+            for subtask in &mut todo.subtasks {
+                subtask.status = TodoStatus::Done;
+            }
+            self.dirty = true;
+        }
+
+        self.timer = None;
+        self.mode = AppMode::Normal;
     }
 
     pub fn enter_notes_mode(&mut self) {
@@ -1021,5 +1070,46 @@ mod tests {
         assert!(app.groups[0].todos[0].status.is_done());
         assert!(app.timer.is_none());
         assert_eq!(app.groups[0].todos[0].pomodoros, 0);
+    }
+
+    #[test]
+    fn entering_zen_starts_timer_and_pause_does_not_depend_on_selection() {
+        let mut app = app_with_todo();
+
+        app.enter_zen_mode();
+        assert_eq!(app.mode, AppMode::Zen);
+        assert!(app.timer.as_ref().unwrap().running);
+
+        app.selected = 0;
+        app.toggle_active_timer();
+        assert!(!app.timer.as_ref().unwrap().running);
+        app.toggle_active_timer();
+        assert!(app.timer.as_ref().unwrap().running);
+    }
+
+    #[test]
+    fn completing_todo_from_zen_finishes_task_and_exits() {
+        let mut app = app_with_todo();
+        app.enter_zen_mode();
+
+        app.complete_active_timer_todo();
+
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.timer.is_none());
+        assert!(app.groups[0].todos[0].status.is_done());
+        assert!(app.groups[0].todos[0].subtasks[0].status.is_done());
+        assert_eq!(app.groups[0].todos[0].pomodoros, 0);
+    }
+
+    #[test]
+    fn timer_completion_exits_zen_and_adds_one_pomodoro() {
+        let mut app = app_with_todo();
+        app.enter_zen_mode();
+
+        app.tick_timer(POMODORO_DURATION);
+
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.timer.is_none());
+        assert_eq!(app.groups[0].todos[0].pomodoros, 1);
     }
 }

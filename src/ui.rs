@@ -45,7 +45,120 @@ pub fn render(frame: &mut Frame, app: &App) {
             render_category_popup(frame, app, area);
             render_group_delete_confirm(frame, app, area);
         }
+        AppMode::Zen => render_zen(frame, app, inner_area),
     }
+}
+
+const BIG_DIGITS: [[&str; 5]; 10] = [
+    ["█████", "█   █", "█   █", "█   █", "█████"],
+    ["  █  ", " ██  ", "  █  ", "  █  ", "█████"],
+    ["█████", "    █", "█████", "█    ", "█████"],
+    ["█████", "    █", "█████", "    █", "█████"],
+    ["█   █", "█   █", "█████", "    █", "    █"],
+    ["█████", "█    ", "█████", "    █", "█████"],
+    ["█████", "█    ", "█████", "█   █", "█████"],
+    ["█████", "    █", "   █ ", "  █  ", "  █  "],
+    ["█████", "█   █", "█████", "█   █", "█████"],
+    ["█████", "█   █", "█████", "    █", "█████"],
+];
+
+const BIG_COLON: [&str; 5] = ["     ", "  █  ", "     ", "  █  ", "     "];
+
+fn big_clock_rows(time: &str) -> Vec<String> {
+    let mut rows = vec![String::new(); 5];
+
+    for ch in time.chars() {
+        let glyph = match ch {
+            ':' => &BIG_COLON,
+            digit if digit.is_ascii_digit() => &BIG_DIGITS[digit as usize - '0' as usize],
+            _ => continue,
+        };
+
+        for (row, segment) in rows.iter_mut().zip(glyph.iter()) {
+            if !row.is_empty() {
+                row.push_str("  ");
+            }
+            row.push_str(segment);
+        }
+    }
+
+    rows
+}
+
+fn render_zen(frame: &mut Frame, app: &App, area: Rect) {
+    let Some((group, todo)) = app.active_timer_todo() else {
+        let message = Paragraph::new("활성 타이머가 없습니다. [ Esc ]로 돌아가세요.")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        frame.render_widget(message, area);
+        return;
+    };
+    let Some(timer) = app.timer.as_ref() else {
+        return;
+    };
+
+    let content = centered_fixed(90, 10, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(content);
+
+    let clock_style = if timer.running {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    };
+    let clock_lines: Vec<Line> = big_clock_rows(&timer.display_remaining())
+        .into_iter()
+        .map(|row| Line::from(Span::styled(row, clock_style)))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(clock_lines).alignment(Alignment::Center),
+        rows[0],
+    );
+
+    let state = if timer.running { "RUNNING" } else { "PAUSED" };
+    frame.render_widget(
+        Paragraph::new(format!("{state}  ·  POMO {}", todo.pomodoros))
+            .style(if timer.running {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Yellow)
+            })
+            .alignment(Alignment::Center),
+        rows[2],
+    );
+    frame.render_widget(
+        Paragraph::new(format!("[>] {} / {}", group.name, todo.title))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center),
+        rows[3],
+    );
+    frame.render_widget(
+        Paragraph::new("[ Space ] 일시정지/재개   [ c ] 완료   [ T ] 취소")
+            .style(Style::default().fg(Color::White))
+            .alignment(Alignment::Center),
+        rows[4],
+    );
+    frame.render_widget(
+        Paragraph::new("[ Esc ] Zen Mode 종료 · 타이머는 계속 실행")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center),
+        rows[5],
+    );
 }
 
 fn render_normal(frame: &mut Frame, app: &App, area: Rect) {
@@ -740,7 +853,7 @@ fn render_search_box(frame: &mut Frame, app: &App, area: Rect) {
 fn render_footer(frame: &mut Frame, area: Rect, mode: FooterMode) {
     let text = match mode {
         FooterMode::Normal => {
-            "[ Tab/h/l ] 그룹  [ j/k ] 항목  [ a/s ] 추가  [ e/d ] 편집  [ t/T ] 타이머  [ / ] 검색  [ ? ] 도움말  [ q ] 종료"
+            "[ Tab/h/l ] 그룹  [ j/k ] 항목  [ Enter ] Zen  [ t/T ] 타이머  [ a/s ] 추가  [ e/d ] 편집  [ / ] 검색  [ ? ] 도움말  [ q ] 종료"
         }
         FooterMode::Input => "[ Enter ] 저장  [ Esc ] 취소",
         FooterMode::EditingNotes => {
@@ -836,6 +949,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  T          ", key),
             Span::styled("현재 타이머 취소", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter      ", key),
+            Span::styled("선택 작업으로 Zen Mode 진입", desc),
         ]),
         Line::from(vec![
             Span::styled("  /          ", key),
@@ -1168,5 +1285,14 @@ mod tests {
         assert_eq!(buffer[(3, 0)].fg, Color::Black);
         assert_eq!(buffer[(4, 0)].fg, Color::Black);
         assert_eq!(buffer[(5, 0)].fg, Color::White);
+    }
+
+    #[test]
+    fn big_clock_has_five_equally_sized_rows() {
+        let rows = big_clock_rows("25:00");
+
+        assert_eq!(rows.len(), 5);
+        assert!(rows.iter().all(|row| row.width() == 33));
+        assert!(rows.iter().any(|row| row.contains('█')));
     }
 }

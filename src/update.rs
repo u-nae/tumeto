@@ -4,7 +4,7 @@ use std::{io, time::Duration};
 use crate::app::{App, AppMode};
 
 pub fn handle_events(app: &mut App) -> io::Result<()> {
-    if event::poll(std::time::Duration::from_millis(100))?
+    if event::poll(Duration::from_millis(100))?
         && let Event::Key(key) = event::read()?
     {
         if key.kind != KeyEventKind::Press {
@@ -32,6 +32,7 @@ pub fn handle_events(app: &mut App) -> io::Result<()> {
             AppMode::CategoryPopup => handle_category_popup(app, key.code),
             AppMode::GroupInput => handle_group_input(app, key.code),
             AppMode::GroupDeleteConfirm => handle_group_delete_confirm(app, key.code),
+            AppMode::Zen => handle_zen_mode(app, key.code),
         }
     }
     Ok(())
@@ -77,6 +78,18 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
 
         KeyCode::Char('/') => app.enter_search_mode(),
 
+        KeyCode::Enter => app.enter_zen_mode(),
+
+        _ => {}
+    }
+}
+
+fn handle_zen_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Char(' ') => app.toggle_active_timer(),
+        KeyCode::Char('c') => app.complete_active_timer_todo(),
+        KeyCode::Char('T') => app.cancel_timer(),
+        KeyCode::Esc => app.exit_zen_mode(),
         _ => {}
     }
 }
