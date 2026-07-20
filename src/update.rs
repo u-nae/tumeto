@@ -1,10 +1,10 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use std::io;
+use std::{io, time::Duration};
 
 use crate::app::{App, AppMode};
 
 pub fn handle_events(app: &mut App) -> io::Result<()> {
-    if event::poll(std::time::Duration::from_millis(16))?
+    if event::poll(Duration::from_millis(100))?
         && let Event::Key(key) = event::read()?
     {
         if key.kind != KeyEventKind::Press {
@@ -32,6 +32,7 @@ pub fn handle_events(app: &mut App) -> io::Result<()> {
             AppMode::CategoryPopup => handle_category_popup(app, key.code),
             AppMode::GroupInput => handle_group_input(app, key.code),
             AppMode::GroupDeleteConfirm => handle_group_delete_confirm(app, key.code),
+            AppMode::Zen => handle_zen_mode(app, key.code),
         }
     }
     Ok(())
@@ -42,9 +43,10 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Char('q') => app.should_quit = true,
 
         KeyCode::Char('j') | KeyCode::Down => app.move_down(),
+
         KeyCode::Char('k') | KeyCode::Up => app.move_up(),
 
-        KeyCode::Char(' ') => app.toggle_selected(),
+        KeyCode::Char(' ') => app.cycle_status(),
 
         KeyCode::Char('a') | KeyCode::Char('i') => app.enter_input_mode(),
 
@@ -56,7 +58,6 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
 
         KeyCode::Char('?') => app.toggle_help(),
 
-        // KeyCode::Tab => app.toggle_pane(),
         KeyCode::Tab | KeyCode::Char('l') => app.next_group(),
 
         KeyCode::BackTab | KeyCode::Char('h') => app.prev_group(),
@@ -67,12 +68,28 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
 
         KeyCode::Char('p') => app.cycle_priority(),
 
+        KeyCode::Char('t') => app.toggle_timer(),
+
+        KeyCode::Char('T') => app.cancel_timer(),
+
         KeyCode::Char('s') => app.enter_subtask_input(),
 
         KeyCode::Char('z') => app.toggle_collapse(),
 
         KeyCode::Char('/') => app.enter_search_mode(),
 
+        KeyCode::Enter => app.enter_zen_mode(),
+
+        _ => {}
+    }
+}
+
+fn handle_zen_mode(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Char(' ') => app.toggle_active_timer(),
+        KeyCode::Char('c') => app.complete_active_timer_todo(),
+        KeyCode::Char('T') => app.cancel_timer(),
+        KeyCode::Esc => app.exit_zen_mode(),
         _ => {}
     }
 }

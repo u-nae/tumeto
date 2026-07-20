@@ -1,4 +1,4 @@
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,17 +20,60 @@ impl Priority {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TodoStatus {
+    #[default]
+    Todo,
+    InProgress,
+    Done,
+}
+
+impl TodoStatus {
+    /// Todo → InProgress → Done → Todo 순환.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Todo => Self::InProgress,
+            Self::InProgress => Self::Done,
+            Self::Done => Self::Todo,
+        }
+    }
+
+    pub fn is_done(self) -> bool {
+        matches!(self, Self::Done)
+    }
+}
+
+fn de_status_compat<'de, D>(deserializer: D) -> Result<TodoStatus, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Compat {
+        Status(TodoStatus), // 신 포맷: "Todo" / "InProgress" / "Done"
+        Legacy(bool),       // 구 포맷: true / false
+    }
+
+    Ok(match Compat::deserialize(deserializer)? {
+        Compat::Status(s) => s,
+        Compat::Legacy(true) => TodoStatus::Done,
+        Compat::Legacy(false) => TodoStatus::Todo,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubTask {
     pub title: String,
-    pub completed: bool,
+
+    #[serde(default, alias = "completed", deserialize_with = "de_status_compat")]
+    pub status: TodoStatus,
 }
 
 impl SubTask {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
-            completed: false,
+            status: TodoStatus::default(),
         }
     }
 }
@@ -38,7 +81,9 @@ impl SubTask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
     pub title: String,
-    pub completed: bool,
+
+    #[serde(default, alias = "completed", deserialize_with = "de_status_compat")]
+    pub status: TodoStatus,
 
     #[serde(default)]
     pub notes: String,
@@ -51,17 +96,21 @@ pub struct TodoItem {
 
     #[serde(default)]
     pub collapsed: bool,
+
+    #[serde(default)]
+    pub pomodoros: u8,
 }
 
 impl TodoItem {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
-            completed: false,
+            status: TodoStatus::default(),
             notes: String::new(),
             priority: Priority::default(),
             subtasks: Vec::new(),
             collapsed: false,
+            pomodoros: 0,
         }
     }
 }
@@ -80,6 +129,50 @@ impl Group {
             name: name.into(),
             todos: Vec::new(),
         }
+    }
+
+    /// 상위 할 일 중 완료(Done) 비율. 0.0 ~ 1.0. 빈 그룹은 0.0.
+    pub fn completion_ratio(&self) -> f64 {
+        if self.todos.is_empty() {
+            return 0.0;
+        }
+        let done = self.todos.iter().filter(|t| t.status.is_done()).count();
+        done as f64 / self.todos.len() as f64
+    }
+
+    /// 그룹 내 모든 상위 할 일의 누적 뽀모도로 합계.
+    pub fn total_pomodoros(&self) -> u32 {
+        self.todos.iter().map(|t| t.pomodoros as u32).sum()
+    }
+}
+
+pub const POMODORO_DURATION: Duration = Duration::from_secs(25 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimerTarget {
+    pub group: usize,
+    pub todo: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PomodoroTimer {
+    pub target: TimerTarget,
+    pub remaining: Duration,
+    pub running: bool,
+}
+
+impl PomodoroTimer {
+    fn new(target: TimerTarget) -> Self {
+        Self {
+            target,
+            remaining: POMODORO_DURATION,
+            running: true,
+        }
+    }
+
+    pub fn display_remaining(&self) -> String {
+        let seconds = self.remaining.as_secs() + u64::from(self.remaining.subsec_nanos() > 0);
+        format!("{:02}:{:02}", seconds / 60, seconds % 60)
     }
 }
 
@@ -124,6 +217,7 @@ pub enum AppMode {
     CategoryPopup,
     GroupInput,
     GroupDeleteConfirm,
+    Zen,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,6 +259,9 @@ pub struct App {
 
     #[serde(skip)]
     pub group_editing: Option<usize>,
+
+    #[serde(skip)]
+    pub timer: Option<PomodoroTimer>,
 }
 
 impl Default for App {
@@ -183,6 +280,7 @@ impl Default for App {
             search_query: String::new(),
             category_cursor: 0,
             group_editing: None,
+            timer: None,
         }
     }
 }
@@ -197,9 +295,10 @@ struct LegacyApp {
 
 impl App {
     pub fn load() -> Self {
-        let path = Self::data_file_path();
+        let content = std::fs::read_to_string(Self::data_file_path())
+            .or_else(|_| std::fs::read_to_string(Self::legacy_data_file_path()));
 
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Ok(content) = content else {
             return Self::default();
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
@@ -233,30 +332,57 @@ impl App {
     }
 
     fn data_file_path() -> PathBuf {
+        Self::home_dir().join(".tumeto_data.json")
+    }
+
+    fn legacy_data_file_path() -> PathBuf {
+        Self::home_dir().join(".tudo_data.json")
+    }
+
+    fn home_dir() -> PathBuf {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".tumeto_data.json")
+        PathBuf::from(home)
     }
 
-    pub fn toggle_selected(&mut self) {
+    pub fn cycle_status(&mut self) {
         let Some(row) = self.current_row() else {
             return;
         };
-        let Some(group) = self.groups.get_mut(self.selected_group) else {
-            return;
-        };
-        match row {
-            RowRef::Todo(i) => {
-                let new_state = !group.todos[i].completed;
-                group.todos[i].completed = new_state;
-                for sub in &mut group.todos[i].subtasks {
-                    sub.completed = new_state;
+        let mut completed_todo = None;
+        {
+            let Some(group) = self.groups.get_mut(self.selected_group) else {
+                return;
+            };
+            match row {
+                RowRef::Todo(i) => {
+                    let next = group.todos[i].status.cycle();
+                    group.todos[i].status = next;
+                    for sub in &mut group.todos[i].subtasks {
+                        sub.status = next;
+                    }
+                    if next.is_done() {
+                        completed_todo = Some(i);
+                    }
+                }
+                RowRef::Sub(i, j) => {
+                    let sub = &mut group.todos[i].subtasks[j];
+                    sub.status = sub.status.cycle();
                 }
             }
-            RowRef::Sub(i, j) => {
-                group.todos[i].subtasks[j].completed = !group.todos[i].subtasks[j].completed;
-            }
+        }
+
+        if let Some(todo) = completed_todo
+            && self.timer.as_ref().is_some_and(|timer| {
+                timer.target
+                    == TimerTarget {
+                        group: self.selected_group,
+                        todo,
+                    }
+            })
+        {
+            self.timer = None;
         }
         self.dirty = true;
     }
@@ -277,6 +403,7 @@ impl App {
                     index: i,
                     item,
                 });
+                self.adjust_timer_after_todo_removed(group_idx, i);
             }
             RowRef::Sub(i, j) => {
                 let item = group.todos[i].subtasks.remove(j);
@@ -292,6 +419,40 @@ impl App {
         self.clamp_selection();
     }
 
+    fn adjust_timer_after_todo_removed(&mut self, group: usize, removed: usize) {
+        let Some(timer) = self.timer.as_mut() else {
+            return;
+        };
+        if timer.target.group != group {
+            return;
+        }
+        if timer.target.todo == removed {
+            self.timer = None;
+        } else if timer.target.todo > removed {
+            timer.target.todo -= 1;
+        }
+    }
+
+    fn adjust_timer_after_todo_inserted(&mut self, group: usize, inserted: usize) {
+        if let Some(timer) = self.timer.as_mut()
+            && timer.target.group == group
+            && timer.target.todo >= inserted
+        {
+            timer.target.todo += 1;
+        }
+    }
+
+    fn adjust_timer_after_group_removed(&mut self, removed: usize) {
+        let Some(timer) = self.timer.as_mut() else {
+            return;
+        };
+        if timer.target.group == removed {
+            self.timer = None;
+        } else if timer.target.group > removed {
+            timer.target.group -= 1;
+        }
+    }
+
     pub fn undo(&mut self) {
         let Some(deleted) = self.last_deleted.take() else {
             return;
@@ -303,6 +464,7 @@ impl App {
                 };
                 let at = index.min(g.todos.len());
                 g.todos.insert(at, item);
+                self.adjust_timer_after_todo_inserted(group, at);
                 self.selected_group = group;
                 self.dirty = true;
                 self.select_row(RowRef::Todo(at));
@@ -454,6 +616,129 @@ impl App {
             group.todos[i].priority = group.todos[i].priority.cycle();
             self.dirty = true;
         }
+    }
+
+    pub fn toggle_timer(&mut self) {
+        let Some(RowRef::Todo(todo_index)) = self.current_row() else {
+            return;
+        };
+
+        let target = TimerTarget {
+            group: self.selected_group,
+            todo: todo_index,
+        };
+
+        if let Some(timer) = self.timer.as_mut() {
+            if timer.target == target {
+                timer.running = !timer.running;
+            }
+            return;
+        }
+
+        let Some(todo) = self
+            .groups
+            .get_mut(target.group)
+            .and_then(|group| group.todos.get_mut(target.todo))
+        else {
+            return;
+        };
+        if todo.status.is_done() {
+            return;
+        }
+
+        if todo.status != TodoStatus::InProgress {
+            todo.status = TodoStatus::InProgress;
+            for subtask in &mut todo.subtasks {
+                subtask.status = TodoStatus::InProgress;
+            }
+            self.dirty = true;
+        }
+
+        self.timer = Some(PomodoroTimer::new(target));
+    }
+
+    pub fn cancel_timer(&mut self) {
+        self.timer = None;
+        if self.mode == AppMode::Zen {
+            self.mode = AppMode::Normal;
+        }
+    }
+
+    pub fn tick_timer(&mut self, elapsed: Duration) {
+        let Some(timer) = self.timer.as_mut() else {
+            return;
+        };
+        if !timer.running {
+            return;
+        }
+        if elapsed < timer.remaining {
+            timer.remaining -= elapsed;
+            return;
+        }
+
+        let target = timer.target;
+        self.timer = None;
+
+        if let Some(todo) = self
+            .groups
+            .get_mut(target.group)
+            .and_then(|group| group.todos.get_mut(target.todo))
+        {
+            todo.pomodoros = todo.pomodoros.saturating_add(1);
+            self.dirty = true;
+        }
+
+        if self.mode == AppMode::Zen {
+            self.mode = AppMode::Normal;
+        }
+    }
+
+    pub fn active_timer_todo(&self) -> Option<(&Group, &TodoItem)> {
+        let target = self.timer.as_ref()?.target;
+        let group = self.groups.get(target.group)?;
+        let todo = group.todos.get(target.todo)?;
+        Some((group, todo))
+    }
+
+    pub fn enter_zen_mode(&mut self) {
+        if self.timer.is_none() {
+            self.toggle_timer();
+        }
+        if self.active_timer_todo().is_some() {
+            self.mode = AppMode::Zen;
+        }
+    }
+
+    pub fn exit_zen_mode(&mut self) {
+        self.mode = AppMode::Normal;
+    }
+
+    pub fn toggle_active_timer(&mut self) {
+        if let Some(timer) = self.timer.as_mut() {
+            timer.running = !timer.running;
+        }
+    }
+
+    pub fn complete_active_timer_todo(&mut self) {
+        let Some(target) = self.timer.as_ref().map(|timer| timer.target) else {
+            self.mode = AppMode::Normal;
+            return;
+        };
+
+        if let Some(todo) = self
+            .groups
+            .get_mut(target.group)
+            .and_then(|group| group.todos.get_mut(target.todo))
+        {
+            todo.status = TodoStatus::Done;
+            for subtask in &mut todo.subtasks {
+                subtask.status = TodoStatus::Done;
+            }
+            self.dirty = true;
+        }
+
+        self.timer = None;
+        self.mode = AppMode::Normal;
     }
 
     pub fn enter_notes_mode(&mut self) {
@@ -689,6 +974,7 @@ impl App {
         }
         let target = self.category_cursor.min(self.groups.len() - 1);
         self.groups.remove(target);
+        self.adjust_timer_after_group_removed(target);
 
         if self.selected_group == target {
             self.selected_group = self.selected_group.min(self.groups.len() - 1);
@@ -705,5 +991,125 @@ impl App {
 
     pub fn cancel_group_delete(&mut self) {
         self.mode = AppMode::CategoryPopup;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with_todo() -> App {
+        let mut app = App::default();
+        let mut todo = TodoItem::new("집중할 작업");
+        todo.subtasks.push(SubTask::new("세부 작업"));
+        app.groups[0].todos.push(todo);
+        app
+    }
+
+    #[test]
+    fn timer_starts_pauses_resumes_and_completes() {
+        let mut app = app_with_todo();
+
+        app.toggle_timer();
+        let timer = app.timer.as_ref().expect("timer should start");
+        assert!(timer.running);
+        assert_eq!(timer.display_remaining(), "25:00");
+        assert_eq!(app.groups[0].todos[0].status, TodoStatus::InProgress);
+        assert_eq!(
+            app.groups[0].todos[0].subtasks[0].status,
+            TodoStatus::InProgress
+        );
+
+        app.toggle_timer();
+        assert!(!app.timer.as_ref().unwrap().running);
+        app.tick_timer(Duration::from_secs(10));
+        assert_eq!(app.timer.as_ref().unwrap().display_remaining(), "25:00");
+
+        app.toggle_timer();
+        app.tick_timer(Duration::from_secs(1));
+        assert_eq!(app.timer.as_ref().unwrap().display_remaining(), "24:59");
+
+        app.tick_timer(POMODORO_DURATION);
+        assert!(app.timer.is_none());
+        assert_eq!(app.groups[0].todos[0].pomodoros, 1);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn timer_target_tracks_insertions_and_deletions() {
+        let mut app = App::default();
+        app.groups[0].todos = vec![
+            TodoItem::new("앞 작업"),
+            TodoItem::new("집중할 작업"),
+            TodoItem::new("뒤 작업"),
+        ];
+        app.selected = 1;
+        app.toggle_timer();
+
+        app.selected = 0;
+        app.delete_selected();
+        assert_eq!(app.timer.as_ref().unwrap().target.todo, 0);
+        assert_eq!(app.active_timer_todo().unwrap().1.title, "집중할 작업");
+
+        app.undo();
+        assert_eq!(app.timer.as_ref().unwrap().target.todo, 1);
+        assert_eq!(app.active_timer_todo().unwrap().1.title, "집중할 작업");
+
+        app.selected = 1;
+        app.delete_selected();
+        assert!(app.timer.is_none());
+    }
+
+    #[test]
+    fn completing_active_todo_cancels_timer_without_adding_pomodoro() {
+        let mut app = app_with_todo();
+        app.toggle_timer();
+
+        app.cycle_status();
+
+        assert!(app.groups[0].todos[0].status.is_done());
+        assert!(app.timer.is_none());
+        assert_eq!(app.groups[0].todos[0].pomodoros, 0);
+    }
+
+    #[test]
+    fn entering_zen_starts_timer_and_pause_does_not_depend_on_selection() {
+        let mut app = app_with_todo();
+
+        app.enter_zen_mode();
+        assert_eq!(app.mode, AppMode::Zen);
+        assert!(app.timer.as_ref().unwrap().running);
+
+        app.selected = 0;
+        app.toggle_active_timer();
+        assert!(!app.timer.as_ref().unwrap().running);
+        app.toggle_active_timer();
+        assert!(app.timer.as_ref().unwrap().running);
+    }
+
+    #[test]
+    fn completing_todo_from_zen_finishes_task_and_exits() {
+        let mut app = app_with_todo();
+        app.enter_zen_mode();
+
+        app.complete_active_timer_todo();
+
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.timer.is_none());
+        assert!(app.groups[0].todos[0].status.is_done());
+        assert!(app.groups[0].todos[0].subtasks[0].status.is_done());
+        assert_eq!(app.groups[0].todos[0].pomodoros, 0);
+    }
+
+    #[test]
+    fn timer_completion_exits_zen_and_adds_one_pomodoro() {
+        let mut app = app_with_todo();
+        app.enter_zen_mode();
+
+        app.tick_timer(POMODORO_DURATION);
+
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(app.timer.is_none());
+        assert_eq!(app.groups[0].todos[0].pomodoros, 1);
     }
 }
