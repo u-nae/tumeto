@@ -13,7 +13,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
     let outer_block = Block::default()
-        .title(" tudo ")
+        .title(" tumeto ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 

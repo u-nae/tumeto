@@ -236,7 +236,7 @@ impl App {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".tudo_data.json")
+        PathBuf::from(home).join(".tumeto_data.json")
     }
 
     pub fn toggle_selected(&mut self) {

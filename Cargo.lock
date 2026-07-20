@@ -484,7 +484,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tudo"
+name = "tumeto"
 version = "0.1.0"
 dependencies = [
  "crossterm",

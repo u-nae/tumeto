@@ -1,13 +1,13 @@
 [package]
-name = "tudo"
+name = "tumeto"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A fast, keyboard-driven terminal todo manager with groups, subtasks, and notes."
 authors = ["Unae Kang, u.naeeeeeee@gmail.com"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/u-nae/tudo"
-homepage = "https://github.com/u-nae/tudo"
+repository = "https://github.com/u-nae/tumeto"
+homepage = "https://github.com/u-nae/tumeto"
 readme = "README.md"
 keywords = ["tui", "todo", "cli", "productivity", "ratatui"]
 categories = ["command-line-utilities"]

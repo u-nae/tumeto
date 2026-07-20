@@ -1,6 +1,6 @@
-# tudo
+# tumeto
 
-> **tui** + **todo** = **tudo**
+> **tui** + **todo** + **pomodoro**= **tumeto**
 
 A fast, keyboard-driven terminal todo manager built with [ratatui](https://ratatui.rs).
 
@@ -9,12 +9,12 @@ Groups, subtasks, per-item notes, priorities, search, and undo — all from the 
 ## Install
 
 ```bash
-cargo install tudo
+cargo install tumeto
 ```
 
 ## Usage
 
-Run `tudo` in any terminal. Data is stored at `~/.tudo_data.json`.
+Run `tumeto` in any terminal. Data is stored at `~/.tumeto_data.json`.
 
 ### Keys
 
